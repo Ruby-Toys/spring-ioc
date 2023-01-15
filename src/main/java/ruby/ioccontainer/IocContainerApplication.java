@@ -1,13 +1,13 @@
 package ruby.ioccontainer;
 
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
+import ruby.ioccontainer.annotation.CustomComponentScan;
+import ruby.ioccontainer.container.CustomApplicationContext;
 
-@SpringBootApplication
+@CustomComponentScan
 public class IocContainerApplication {
 
 	public static void main(String[] args) {
-		SpringApplication.run(IocContainerApplication.class, args);
+		CustomApplicationContext customApplicationContext = CustomApplicationContext.getApplicationContext();
+		customApplicationContext.init();
 	}
-
 }
