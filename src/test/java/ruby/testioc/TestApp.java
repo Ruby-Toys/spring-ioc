@@ -1,4 +1,4 @@
-package ruby.container;
+package ruby.testioc;
 
 import ruby.ioccontainer.annotation.CustomComponentScan;
 

@@ -1,4 +1,4 @@
-package ruby.container;
+package ruby.testioc;
 
 public class TestBean3 {
 }

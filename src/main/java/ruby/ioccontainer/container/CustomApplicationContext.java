@@ -16,10 +16,8 @@ import ruby.ioccontainer.annotation.CustomComponentScan;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
+import java.util.stream.Collectors;
 
 public class CustomApplicationContext {
 
@@ -55,8 +53,11 @@ public class CustomApplicationContext {
         String basePackage = getBasePackage();
 
         if (basePackage != null) {
-            scan(basePackage);
-            injectBean();
+            List<? extends Class<?>> classTypes = scan(basePackage);
+
+            createBeans(classTypes);
+
+            injectBeans();
         }
     }
 
@@ -66,13 +67,9 @@ public class CustomApplicationContext {
             Resource[] resources = resourcePatternResolver.getResources(SUFFIX);
             return Arrays.stream(resources)
                     .filter(Resource::isFile)
-                    .map(resource -> {
-                        Class<?> classType = convertResourceToClassType(resource);
-
-                        if (!classType.isAnnotationPresent(CustomComponentScan.class)) {
-                            return null;
-                        }
-
+                    .map(this::convertResourceToClassType)
+                    .filter(classType -> classType.isAnnotationPresent(CustomComponentScan.class))
+                    .map(classType -> {
                         // @CustomComponentScan 의 basePackage 값을 설정하지 않았을 경우 애너테이션이 붙어있는 클래스가 위치한 패키지로 설정
                         String basePackage = classType.getAnnotation(CustomComponentScan.class).basePackage();
                         if (basePackage.isBlank()) {
@@ -82,7 +79,6 @@ public class CustomApplicationContext {
                         logger.info("basePackage : {}", basePackage);
                         return basePackage;
                     })
-                    .filter(Objects::nonNull)
                     .findFirst()
                     .orElse(null);
         } catch (IOException e) {
@@ -95,34 +91,30 @@ public class CustomApplicationContext {
         try {
             MetadataReader metadataReader = metadataReaderFactory.getMetadataReader(resource);
             ClassMetadata classMetadata = metadataReader.getClassMetadata();
+
             return Class.forName(classMetadata.getClassName());
         } catch (IOException | ClassNotFoundException e) {
             throw new RuntimeException(e);
         }
     }
 
-    /** basePackage 를 기준으로 하위 패키지까지 모두 탐색하여 @Component 가 붙은 클래스를 빈 객체로 생성하여 등록 */
-    private void scan(String basePackage) {
+    /** basePackage 를 기준으로 하위 패키지까지 모두 탐색하여 @Component 가 붙은 클래스를 탐색 */
+    private List<? extends Class<?>> scan(String basePackage) {
         String classPattern = basePackage.replaceAll("\\.", "/") + SUFFIX;
 
         try {
             Resource[] resources = resourcePatternResolver.getResources(classPattern);
-            Arrays.stream(resources)
-                    .forEach(resource -> {
-                        Class<?> classType = convertResourceToClassType(resource);
-
-                        // @CustomComponent 가 붙어있는 클래스를 빈 객체로 생성하여 등록
-                        if (classType.isAnnotationPresent(CustomComponent.class)) {
-                            createBean(classType);
-                        }
-                    });
+            return Arrays.stream(resources)
+                    .map(this::convertResourceToClassType)
+                    .filter(classType -> classType.isAnnotationPresent(CustomComponent.class))
+                    .collect(Collectors.toList());
         } catch (IOException e) {
             throw new RuntimeException("빈 등록 중 예외 발생!", e);
         }
     }
 
     /** 의존성 주입 - 빈 객체의 @CustomAutowired 가 붙은 필드에 컨테이너에 저장된 빈 객체를 주입 */
-    private void injectBean() {
+    private void injectBeans() {
         for (Class<?> classType : container.keySet()) {
             Object bean = container.get(classType);
 
@@ -147,19 +139,21 @@ public class CustomApplicationContext {
     }
 
     /** 객체 생성 - 파라미터가 없는 기본 생성자가 반드시 필요함 */
-    private <T> void createBean(Class<T> classType) {
-        try {
-            Constructor<T> constructor = classType.getConstructor();
+    private void createBeans(List<? extends Class<?>> classTypes) {
+        classTypes.forEach(classType -> {
+            try {
+                Constructor<?> constructor = classType.getConstructor();
 
-            constructor.setAccessible(true);
+                constructor.setAccessible(true);
 
-            T bean = constructor.newInstance();
-            container.put(classType, bean);
+                Object bean = constructor.newInstance();
+                container.put(classType, bean);
 
-            logger.info("Bean created : {}" , bean.getClass().getName());
-        } catch (InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException e) {
-            throw new RuntimeException(e);
-        }
+                logger.info("Bean created : {}" , bean.getClass().getName());
+            } catch (InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException e) {
+                throw new RuntimeException(e);
+            }
+        });
     }
 
     public <T> Object getBean(Class<T> classType) {
