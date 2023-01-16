@@ -4,8 +4,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
+import org.springframework.core.io.support.ResourcePatternResolver;
 import org.springframework.core.type.ClassMetadata;
 import org.springframework.core.type.classreading.MetadataReader;
+import org.springframework.core.type.classreading.MetadataReaderFactory;
 import org.springframework.core.type.classreading.SimpleMetadataReaderFactory;
 import ruby.ioccontainer.annotation.CustomAutowired;
 import ruby.ioccontainer.annotation.CustomComponent;
@@ -14,26 +16,33 @@ import ruby.ioccontainer.annotation.CustomComponentScan;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collectors;
 
 public class CustomApplicationContext {
 
     private final Logger logger = LoggerFactory.getLogger(this.getClass());
-    private static final String CLASS_PATH = "classpath*:";
-    private static final String SUFFIX = "/**/*.class";
-    private static final Map<Class<?>, Object> container = new HashMap<>();
-    private final SimpleMetadataReaderFactory metadataReaderFactory = new SimpleMetadataReaderFactory();
-    private final PathMatchingResourcePatternResolver resourcePatternResolver = new PathMatchingResourcePatternResolver();
-
+    public static final String SUFFIX = "/**/*.class";
+    private final Map<Class<?>, Object> container;
+    private final MetadataReaderFactory metadataReaderFactory;
+    private final ResourcePatternResolver resourcePatternResolver;
     private static CustomApplicationContext applicationContext;
 
-    private CustomApplicationContext() {}
+    private CustomApplicationContext(
+            Map<Class<?>, Object> container,
+            MetadataReaderFactory metadataReaderFactory,
+            ResourcePatternResolver resourcePatternResolver) {
+        this.container = container;
+        this.metadataReaderFactory = metadataReaderFactory;
+        this.resourcePatternResolver = resourcePatternResolver;
+    }
 
     public static CustomApplicationContext getApplicationContext() {
         if (applicationContext == null) {
-            applicationContext = new CustomApplicationContext();
+            Map<Class<?>, Object> container = new HashMap<>();
+            MetadataReaderFactory metadataReaderFactory = new SimpleMetadataReaderFactory();
+            ResourcePatternResolver resourcePatternResolver = new PathMatchingResourcePatternResolver();
+            applicationContext = new CustomApplicationContext(container, metadataReaderFactory, resourcePatternResolver);
         }
 
         return applicationContext;
@@ -44,33 +53,27 @@ public class CustomApplicationContext {
         String basePackage = getBasePackage();
 
         if (basePackage != null) {
-            scan(basePackage);
-            injectBean();
+            List<? extends Class<?>> classTypes = scan(basePackage);
+
+            createBeans(classTypes);
+
+            injectBeans();
         }
     }
 
     /** @CustomComponentScan 을 통해 컴포넌트 스캔을 할 기준이 될 패키지를 확인 */
     private String getBasePackage() {
-        String packageSearchPathPattern = CLASS_PATH + SUFFIX;
         try {
-            Resource[] resources = resourcePatternResolver.getResources(packageSearchPathPattern);
+            Resource[] resources = resourcePatternResolver.getResources(SUFFIX);
             return Arrays.stream(resources)
-                    .filter(resource -> {
-                        if (!resource.isFile()) {
-                            return false;
-                        }
-
-                        Class<?> classType = convertResourceToClassType(resource);
-                        return classType.isAnnotationPresent(CustomComponentScan.class);
-                    })
-                    .map(resource -> {
-                        Class<?> classType = convertResourceToClassType(resource);
-
+                    .filter(Resource::isFile)
+                    .map(this::convertResourceToClassType)
+                    .filter(classType -> classType.isAnnotationPresent(CustomComponentScan.class))
+                    .map(classType -> {
+                        // @CustomComponentScan 의 basePackage 값을 설정하지 않았을 경우 애너테이션이 붙어있는 클래스가 위치한 패키지로 설정
                         String basePackage = classType.getAnnotation(CustomComponentScan.class).basePackage();
-                        // CustomComponentScan 의 value 값이 설정되어 있지 않다면 애너테이션이 붙은 클래스의 패키지를 기준으로 한다.
                         if (basePackage.isBlank()) {
-                            int splitIndex = classType.getName().lastIndexOf(".");
-                            basePackage =  classType.getName().substring(0, splitIndex);
+                            basePackage = classType.getPackageName();
                         }
 
                         logger.info("basePackage : {}", basePackage);
@@ -88,40 +91,30 @@ public class CustomApplicationContext {
         try {
             MetadataReader metadataReader = metadataReaderFactory.getMetadataReader(resource);
             ClassMetadata classMetadata = metadataReader.getClassMetadata();
+
             return Class.forName(classMetadata.getClassName());
         } catch (IOException | ClassNotFoundException e) {
             throw new RuntimeException(e);
         }
     }
 
-    /** basePackage 를 기준으로 하위 패키지까지 모두 탐색하여 @Component 가 붙은 클래스를 빈 객체로 생성하여 등록 */
-    private void scan(String basePackage) {
-        String packageSearchPathPattern =
-                CLASS_PATH
-                + basePackage.replaceAll("\\.", "/")
-                + SUFFIX;
+    /** basePackage 를 기준으로 하위 패키지까지 모두 탐색하여 @Component 가 붙은 클래스를 탐색 */
+    private List<? extends Class<?>> scan(String basePackage) {
+        String classPattern = basePackage.replaceAll("\\.", "/") + SUFFIX;
 
         try {
-            Resource[] resources = resourcePatternResolver.getResources(packageSearchPathPattern);
-            Arrays.stream(resources).forEach(resource -> {
-                try {
-                    Class<?> classType = convertResourceToClassType(resource);
-
-                    // @CustomComponent 가 붙어있는 클래스를 빈 객체로 생성하여 등록
-                    if (classType.isAnnotationPresent(CustomComponent.class)) {
-                        createBean(classType);
-                    }
-                } catch (NoSuchMethodException e) {
-                    throw new RuntimeException(e);
-                }
-            });
+            Resource[] resources = resourcePatternResolver.getResources(classPattern);
+            return Arrays.stream(resources)
+                    .map(this::convertResourceToClassType)
+                    .filter(classType -> classType.isAnnotationPresent(CustomComponent.class))
+                    .collect(Collectors.toList());
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            throw new RuntimeException("빈 등록 중 예외 발생!", e);
         }
     }
 
     /** 의존성 주입 - 빈 객체의 @CustomAutowired 가 붙은 필드에 컨테이너에 저장된 빈 객체를 주입 */
-    private void injectBean() {
+    private void injectBeans() {
         for (Class<?> classType : container.keySet()) {
             Object bean = container.get(classType);
 
@@ -131,7 +124,7 @@ public class CustomApplicationContext {
                         try {
                             Object fieldInstance = container.get(field.getType());
                             if (fieldInstance == null) {
-                                throw new RuntimeException("Not created bean");
+                                throw new RuntimeException("해당 타입의 빈을 찾을 수 없습니다. : " + field.getType());
                             }
 
                             field.setAccessible(true);
@@ -139,29 +132,31 @@ public class CustomApplicationContext {
 
                             logger.info("[{}] injected field: {}", fieldInstance.getClass().getName(), bean.getClass().getName());
                         } catch (IllegalAccessException e) {
-                            throw new RuntimeException(e);
+                            throw new RuntimeException("빈 주입 중 예외 발생!", e);
                         }
                     });
         }
     }
 
     /** 객체 생성 - 파라미터가 없는 기본 생성자가 반드시 필요함 */
-    private <T> void createBean(Class<T> classType) throws NoSuchMethodException {
-        try {
-            Constructor<T> constructor = classType.getConstructor();
+    private void createBeans(List<? extends Class<?>> classTypes) {
+        classTypes.forEach(classType -> {
+            try {
+                Constructor<?> constructor = classType.getConstructor();
 
-            constructor.setAccessible(true);
+                constructor.setAccessible(true);
 
-            T bean = constructor.newInstance();
-            container.put(classType, bean);
+                Object bean = constructor.newInstance();
+                container.put(classType, bean);
 
-            logger.info("Bean create : {}" , bean.getClass().getName());
-        } catch (InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException e) {
-            throw new RuntimeException(e);
-        }
+                logger.info("Bean created : {}" , bean.getClass().getName());
+            } catch (InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException e) {
+                throw new RuntimeException(e);
+            }
+        });
     }
 
-    public static <T> Object getBean(Class<T> classType) {
+    public <T> Object getBean(Class<T> classType) {
         return container.get(classType);
     }
 }
