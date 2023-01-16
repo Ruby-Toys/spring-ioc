@@ -16,7 +16,10 @@ import ruby.ioccontainer.annotation.CustomComponentScan;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
-import java.util.*;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 public class CustomApplicationContext {
@@ -61,7 +64,7 @@ public class CustomApplicationContext {
         }
     }
 
-    /** @CustomComponentScan 을 통해 컴포넌트 스캔을 할 기준이 될 패키지를 확인 */
+    /** 컴포넌트 스캔을 할 기준이 될 패키지를 확인 */
     private String getBasePackage() {
         try {
             Resource[] resources = resourcePatternResolver.getResources(SUFFIX);
@@ -113,7 +116,7 @@ public class CustomApplicationContext {
         }
     }
 
-    /** 의존성 주입 - 빈 객체의 @CustomAutowired 가 붙은 필드에 컨테이너에 저장된 빈 객체를 주입 */
+    /** 빈 객체의 @CustomAutowired 가 붙은 필드에 컨테이너에 저장된 빈 객체를 주입 */
     private void injectBeans() {
         for (Class<?> classType : container.keySet()) {
             Object bean = container.get(classType);
@@ -156,6 +159,7 @@ public class CustomApplicationContext {
         });
     }
 
+    /** 빈 객체 조회 */
     public <T> Object getBean(Class<T> classType) {
         return container.get(classType);
     }
